@@ -6,5 +6,7 @@ add_custom_target ( parser_lexer
 
 add_executable(cmp main.cpp BreadLexer.cpp BreadParser.cpp)
 add_dependencies(cmp parser_lexer)
-target_link_libraries(cmp -lantlr4-runtime)
+target_link_libraries(cmp -lantlr4-runtime -lLLVM-18)
 target_include_directories(cmp PUBLIC /usr/include/antlr4-runtime)
+target_include_directories(cmp PUBLIC /usr/include/llvm-18)
+target_include_directories(cmp PUBLIC /usr/include/llvm-c-18)
