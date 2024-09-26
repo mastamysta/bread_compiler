@@ -68,12 +68,13 @@ class IRVisitor : public BreadVisitor
 public:
     std::any visitProg(BreadParser::ProgContext *context) override
     {
-        return context->expr()->accept(this);
+        builder->CreateRet(std::any_cast<llvm::Value*>(context->expr()->accept(this)));
+        return 0;
     }
 
     std::any visitDiv(BreadParser::DivContext *context) override
     {
-        return builder->CreateUDiv(std::any_cast<llvm::Value*>(context->left->accept(this)), std::any_cast<llvm::Value*>(context->right->accept(this)));
+        return builder->CreateSDiv(std::any_cast<llvm::Value*>(context->left->accept(this)), std::any_cast<llvm::Value*>(context->right->accept(this)));
     }
 
     std::any visitAdd(BreadParser::AddContext *context) override
@@ -136,15 +137,14 @@ int main(int argc, const char* argv[])
  
     irv.visitProg(tree);
 
-    // return 0 from main
-    auto ret = llvm::ConstantInt::get(i32, 0);
-    builder->CreateRet(ret);
-
     std::cout << "Running built LLVM IR...\n";
 
     llvm::ExecutionEngine *executionEngine = llvm::EngineBuilder(std::move(mod)).setEngineKind(llvm::EngineKind::Interpreter).create();
     llvm::Function *main = executionEngine->FindFunctionNamed(llvm::StringRef("main"));
     auto result = executionEngine->runFunction(main, {});
+    int pr = result.IntVal.getLimitedValue();
+
+    std::cout << pr << "\n";
 
     return 0;
 }
