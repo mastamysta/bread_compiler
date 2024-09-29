@@ -20,6 +20,7 @@ std::unique_ptr<llvm::IRBuilder<>> builder;
 std::unique_ptr<llvm::Module> mod;
 
 std::map<std::string, llvm::Function*> functable;
+std::map<std::string, llvm::Value*> local_vars;
 
 class IRVisitor : public BreadVisitor
 {
@@ -70,6 +71,8 @@ public:
 
     std::any visitFunc(BreadParser::FuncContext *context)
     {
+        local_vars.clear();
+
         context->prot()->accept(this);
 
         for (const auto& it: context->expr())
@@ -85,7 +88,6 @@ public:
         auto argl = std::any_cast<std::pair<std::vector<llvm::Type*>, std::vector<std::string>>>(context->argl()->accept(this));
         auto fname = context->name->getText();
 
-
         auto i32 = builder->getInt32Ty();
         auto prototype = llvm::FunctionType::get(i32, argl.first, false);
         llvm::Function *fn = llvm::Function::Create(prototype, llvm::Function::ExternalLinkage, fname, mod.get());
@@ -93,6 +95,15 @@ public:
         builder->SetInsertPoint(body);
 
         functable[fname] = fn;
+
+        // Set up arguments as local variables
+
+        auto i = 0;
+        for (const auto& it: argl.second)
+        {
+            local_vars[it] = reinterpret_cast<llvm::Value*>(fn->getArg(i));
+            i++;
+        }
 
         return 0;
     }
@@ -132,6 +143,41 @@ public:
 
         return 0;
     }
+
+    std::any visitAss(BreadParser::AssContext *context)
+    {
+        if (local_vars.find(context->name->getText()) == local_vars.end())
+        {
+            std::cout << "Assigning to undeclared variable " << context->name->getText() << " is not allowed.\n";
+            exit(1);
+        }
+
+        local_vars[context->name->getText()] = std::any_cast<llvm::Value*>(context->expr()->accept(this));
+
+        return local_vars[context->name->getText()];
+    }
+
+    std::any visitVar(BreadParser::VarContext *context)
+    {
+        if (local_vars.find(context->name->getText()) == local_vars.end())
+        {
+            std::cout << "Accessing to undeclared variable " << context->name->getText() << " is not allowed.\n";
+            exit(1);
+        }
+
+        return local_vars[context->name->getText()];
+    }
+
+    std::any visitDecl(BreadParser::DeclContext *context)
+    {
+        // We assign the element in the map to null to indicate that the variable has been declared.
+        // The assignment expression checks that the variable has been declared by performing a find()
+        // over the local variable map.
+        local_vars[context->name->getText()] = nullptr;
+
+        return 0;
+    }
+
 };
 
 int main(int argc, const char* argv[]) 

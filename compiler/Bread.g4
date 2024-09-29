@@ -16,9 +16,13 @@ expr:   left=expr '/' right=expr # div
     |   INT # lit
     |   '(' expr ')' # brack
     |   RETURN expr # ret
+    |   type=TYPE_ID name=SYMNAME # decl
+    |   name=SYMNAME EQUAL expr # ass
+    |   name=SYMNAME # var
     ;
 
-WS: [ \t\r\n]+ -> skip ;
+WS: [ \t\r\n]+ -> skip;
+TYPE_ID: 'i32';
 RETURN  : 'return';
 NEWLINE : [\r\n]+ ;
 INT     : [0-9]+ ;
@@ -26,4 +30,5 @@ LBRACE  : '{';
 RBRACE  : '}';
 LBRACK  : '(';
 RBRACK  : ')';
+EQUAL   : '=';
 SYMNAME : [a-z]+;
