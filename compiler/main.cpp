@@ -1,5 +1,7 @@
 #include <iostream>
 #include <memory>
+#include <vector>
+#include <map>
 
 // ANTLR4 stuff
 
@@ -20,7 +22,7 @@ std::unique_ptr<llvm::IRBuilder<>> builder;
 std::unique_ptr<llvm::Module> mod;
 
 std::map<std::string, llvm::Function*> functable;
-std::map<std::string, llvm::Value*> local_vars;
+std::stack<std::map<std::string, llvm::Value*>> local_vars;
 
 class IRVisitor : public BreadVisitor
 {
@@ -101,7 +103,7 @@ public:
         auto i = 0;
         for (const auto& it: argl.second)
         {
-            local_vars[it] = reinterpret_cast<llvm::Value*>(fn->getArg(i));
+            local_vars.top()[it] = reinterpret_cast<llvm::Value*>(fn->getArg(i));
             i++;
         }
 
@@ -146,26 +148,26 @@ public:
 
     std::any visitAss(BreadParser::AssContext *context)
     {
-        if (local_vars.find(context->name->getText()) == local_vars.end())
+        if (local_vars.top().find(context->name->getText()) == local_vars.top().end())
         {
             std::cout << "Assigning to undeclared variable " << context->name->getText() << " is not allowed.\n";
             exit(1);
         }
 
-        local_vars[context->name->getText()] = std::any_cast<llvm::Value*>(context->expr()->accept(this));
+        local_vars.top()[context->name->getText()] = std::any_cast<llvm::Value*>(context->expr()->accept(this));
 
-        return local_vars[context->name->getText()];
+        return local_vars.top()[context->name->getText()];
     }
 
     std::any visitVar(BreadParser::VarContext *context)
     {
-        if (local_vars.find(context->name->getText()) == local_vars.end())
+        if (local_vars.top().find(context->name->getText()) == local_vars.top().end())
         {
             std::cout << "Accessing to undeclared variable " << context->name->getText() << " is not allowed.\n";
             exit(1);
         }
 
-        return local_vars[context->name->getText()];
+        return local_vars.top()[context->name->getText()];
     }
 
     std::any visitDecl(BreadParser::DeclContext *context)
@@ -173,9 +175,126 @@ public:
         // We assign the element in the map to null to indicate that the variable has been declared.
         // The assignment expression checks that the variable has been declared by performing a find()
         // over the local variable map.
-        local_vars[context->name->getText()] = nullptr;
+        local_vars.top()[context->name->getText()] = nullptr;
 
         return 0;
+    }
+
+    llvm::BasicBlock *parseBodyStatements(std::vector<StmtContext*> stmt)
+    {
+        llvm::Function *fn = builder->GetInsertBlock()->getParent();
+        llvm::BasicBlock *inner_blk = llvm::BasicBlock::Create(*llvm_context, fn);
+        auto outer_blk = builder->GetInsertBlock();
+        builder->SetInsertPoint(inner_blk);
+
+        for (const auto& it: stmt)
+        {
+            it->accept(this);
+        }
+
+        // In LLVM we must terminate each block with a control-flow statement.
+        builder->CreateBr(outer_blk); // TODO: This is incorrect, we are jumping back to the start of the outer block!
+        builder->SetInsertPoint(outer_blk);
+
+        return inner_blk;
+    }
+
+    std::any visitBody(BreadParser::BodyContext *context)
+    {
+        // Copy pre-existing local vars
+        local_vars.push(local_vars.top());
+
+        parseBodyStatements(context->stmt())
+
+        // Pop our locals!
+        auto body_locals = local_vars.top();
+        local_vars.pop();
+
+        // Merge back modified locals
+        for (const auto& it: local_vars.top())
+        {
+            if (it.second != body_locals[it.first])
+                local_vars[it.first] = body_locals[it.first];
+        }
+
+        return 0;
+    }
+
+    std::any visitCbod(BreadParser::CbodContext *context)
+    {
+        // Create merge block to contain PHI's and the insert point to be the merge block. 
+        // The current implementation of parseBodyStatements will create an uncoditional 
+        // branch to the merge block when it is done processing the body.
+        auto cond = builder->GetInsertBlock();
+        llvm::Function *fn = cond->getParent();
+        llvm::BasicBlock *merge = llvm::BasicBlock::Create(*llvm_context, fn);
+        builder->SetInsertPoint(merge);
+
+        // Copy pre-existing local vars
+        local_vars.push(local_vars.top());
+
+        auto then = parseBodyStatements(context->stmt())
+
+        // Pop our locals!
+        auto body_locals = local_vars.top();
+        local_vars.pop();
+
+        // Instead of simply merging back any modified locals, we must create PHI nodes
+        // for each variable modified within the block.
+        for (const auto& it: local_vars.top())
+        {
+            if (it.second != body_locals[it.first])
+            {
+                auto phi = builder->CreatePHI(builder->getInt32Ty(), 2); // Two reserved value, one for the original and one for the modified value.
+                phi->addIncoming(then, body_locals[it.first]);
+                phi->addIncoming(cond, it.second);
+                local_vars.top()[it.first] = reinterpret_cast<Value*>(phi);
+            }
+        }
+
+        // Begin a new block to jump to from merge.
+        cont = bui
+
+        return std::pair<>{then, merge};
+    }
+
+    std::any visitIf(BreadParser::IfContext *context)
+    {
+        auto condition = std::any_cast<llvm::Value*>(context->expr()->accept(this));
+        auto [then, merge] = std::any_cast<std::pair<llvm::BasicBlock*, llvm::BasicBlock*>>(context->body()->accept(this));
+        builder->CreateCondBr(condition, then, merge);
+
+        return 0;
+    }
+
+    std::any visitExp(BreadParser::ExpContext *context)
+    {
+        return context->expr()->accept(this);
+    }
+
+    std::any visitLt(BreadParser::LtContext *context)
+    {
+        auto lhs = std::any_cast<llvm::Value*>(context->left->accept(this));
+        auto rhs = std::any_cast<llvm::Value*>(context->right->accept(this));
+
+        return builder->CreateICmpSLT(lhs, rhs);
+    }
+
+    std::any visitEq(BreadParser::EqContext *context)
+    {
+        auto lhs = std::any_cast<llvm::Value*>(context->left->accept(this));
+        auto rhs = std::any_cast<llvm::Value*>(context->right->accept(this));
+
+        return builder->CreateICmpEQ(lhs, rhs);
+
+    }
+
+    std::any visitGt(BreadParser::GtContext *context)
+    {
+        auto lhs = std::any_cast<llvm::Value*>(context->left->accept(this));
+        auto rhs = std::any_cast<llvm::Value*>(context->right->accept(this));
+
+        return builder->CreateICmpSGT(lhs, rhs);
     }
 
 };
